@@ -1,5 +1,5 @@
 # Сборка
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24.3-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN CGO_ENABLED=0 go build -o /todo
@@ -15,6 +15,6 @@ ENV TODO_DBFILE=/data/scheduler.db
 ENV TODO_PASSWORD=""
 
 VOLUME /data
-EXPOSE 7540
+EXPOSE ${TODO_PORT}
 
 CMD ["/app/todo"]

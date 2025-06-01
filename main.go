@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/gorilla/mux"
-	_ "modernc.org/sqlite"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/mux"
+	_ "modernc.org/sqlite"
 )
 
 // Структуры данных
@@ -214,6 +215,7 @@ func getTaskHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == sql.ErrNoRows {
 			sendJSONError(w, http.StatusNotFound, "Задача не найдена")
+			return
 		}
 		sendJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Ошибка базы данных: %v", err))
 		return
@@ -249,21 +251,13 @@ func addTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Date < today {
-		if req.Repeat != "" {
-			nextDateStr, err := NextDate(now, req.Date, req.Repeat)
-			if err != nil {
-				sendJSONError(w, http.StatusBadRequest, fmt.Sprintf("Неверное правило повторения: %v", err))
-				return
-			}
-			req.Date = nextDateStr
-		} else {
-			req.Date = today
-		}
+	if err := adjustDate(&req, today, now); err != nil {
+		sendJSONError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if req.Repeat != "" {
-		_, err := NextDate(now, req.Date, req.Repeat)
+		_, err := getNextDate(now, req.Date, req.Repeat)
 		if err != nil {
 			sendJSONError(w, http.StatusBadRequest, fmt.Sprintf("Неверное правило повторения: %v", err))
 			return
@@ -322,7 +316,7 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Date < today {
 		if req.Repeat != "" {
-			nextDateStr, err := NextDate(now, req.Date, req.Repeat)
+			nextDateStr, err := getNextDate(now, req.Date, req.Repeat)
 			if err != nil {
 				sendJSONError(w, http.StatusBadRequest, fmt.Sprintf("Неверное правило повторения: %v", err))
 				return
@@ -334,7 +328,7 @@ func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Repeat != "" {
-		_, err := NextDate(now, req.Date, req.Repeat)
+		_, err := getNextDate(now, req.Date, req.Repeat)
 		if err != nil {
 			sendJSONError(w, http.StatusBadRequest, fmt.Sprintf("Неверное правило повторения: %v", err))
 			return
@@ -433,7 +427,7 @@ func taskDoneHandler(w http.ResponseWriter, r *http.Request) {
 		_, err = db.Exec("DELETE FROM scheduler WHERE id = ?", id)
 	} else {
 		// Обновляем дату для повторяющейся задачи
-		nextDate, err := NextDate(now, task.Date, repeat)
+		nextDate, err := getNextDate(now, task.Date, repeat)
 		if err != nil {
 			sendJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Ошибка расчета следующей даты: %v", err))
 			return
@@ -512,10 +506,11 @@ func nextDateHandler(w http.ResponseWriter, r *http.Request) {
 
 	if date.Before(minDate) || date.After(maxDate) {
 		//todayDate, _ := time.Parse(DateFormat, "20220202")
-		dateStr = "20240126"
+		//dateStr = "20240126"
+		dateStr = date.AddDate(now.Year()-date.Year()-1, 0, 0).Format(DateFormat)
 	}
 
-	nextDate, err := NextDate(now, dateStr, repeat)
+	nextDate, err := getNextDate(now, dateStr, repeat)
 	if err != nil {
 		sendJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -525,7 +520,7 @@ func nextDateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(nextDate))
 }
 
-func NextDate(now time.Time, dateStr string, repeat string) (string, error) {
+func getNextDate(now time.Time, dateStr string, repeat string) (string, error) {
 	if repeat == "" {
 		return "", errors.New("пустое правило повторения")
 	}
@@ -696,7 +691,7 @@ func getTasksByDate(date string, limit int) ([]Task, error) {
 }
 
 func scanTasks(rows *sql.Rows) ([]Task, error) {
-	var tasks []Task
+	tasks := make([]Task, 0)
 	for rows.Next() {
 		var t Task
 		var id int64
@@ -727,6 +722,28 @@ func parseDayList(s string, min, max int) ([]int, error) {
 		result = append(result, n)
 	}
 	return result, nil
+}
+
+func adjustDate(req *Task, today string, now time.Time) error {
+	if req.Date >= today {
+		return nil
+	}
+
+	if req.Repeat == "" {
+		req.Date = today
+		return nil
+	}
+
+	nextDate, err := getNextDate(now, req.Date, req.Repeat)
+	if err != nil {
+		return err
+	}
+
+	req.Date = nextDate
+	if nextDate < today {
+		req.Date = today
+	}
+	return nil
 }
 
 func daysInMonth(year int, month time.Month) int {
